@@ -56,7 +56,7 @@ BASE_DIR="$USER_HOME/gensyn/run"
 TARGET_DIR="/root/rl-swarm"
 LOGIN_SUBDIR="modal-login"
 BOOTNODES_FILE="$BASE_DIR/bootnodes.txt"
-CONFIG_FILE="$TARGET_DIR/rgym_exp/config/rg-swarm.yaml"
+CONFIG_FILE="$TARGET_DIR/code_gen_exp/src/manager.py"
 STATE_FILE="$BASE_DIR/.current_index"
 
 # Tu dong tim so folder lon nhat
@@ -192,7 +192,7 @@ while true; do
     LOG_LAST_30S=$(journalctl -u rl-swarm --since "30 seconds ago" -o cat 2>/dev/null || echo "")
     current_time=$(date +%s)
 
-    if echo "$LOG_LAST_30S" | grep -Eq "Joining round|Already finished"; then
+    if echo "$LOG_LAST_30S" | grep -Eq "submission completed|Already finished"; then
         last_detect_time=$current_time
 
         if (( CURRENT_INDEX > MAX_FOLDER )); then
@@ -244,31 +244,6 @@ chmod +x "$USER_HOME/gensyn/run/auto.run"
 
 # Reload systemd
 systemctl daemon-reload
-
-# Cau hinh crontab cho root
-CRON_CMD="0 2,5,8,11,14,17,20,23 * * * rm -f /home/$(logname)/gensyn/run/.current_index && systemctl restart rl-swarm2"
-CRON_COMMENT="# Auto restart rl-swarm2 every 3 hours"
-
-# Lay crontab hien tai cua root
-CURRENT_CRON=$(crontab -l 2>/dev/null)
-
-# Kiem tra xem cron job da ton tai chua
-if echo "$CURRENT_CRON" | grep -qF "systemctl restart rl-swarm2"; then
-    # Xoa dong cu va them lai
-    UPDATED_CRON=$(echo "$CURRENT_CRON" | grep -vF "systemctl restart rl-swarm2" | grep -vF "Auto restart rl-swarm2")
-    if [ -z "$UPDATED_CRON" ]; then
-        (echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
-    else
-        (echo "$UPDATED_CRON"; echo ""; echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
-    fi
-else
-    if [ -z "$CURRENT_CRON" ]; then
-        (echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
-    else
-        (echo "$CURRENT_CRON"; echo ""; echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
-    fi
-fi
-
 
 echo "BAT DAU CAI DAT CAC PACKAGE CAN THIET"
 
@@ -357,7 +332,7 @@ if [ -d "$RL_SWARM_DIR" ]; then
 else
     echo "Thu muc rl-swarm chua ton tai, dang clone..."
     cd /root
-    git clone https://github.com/hiepntnaa/rl-swarm/
+    git clone https://github.com/biib6688/rl-swarm/
     
     if [ $? -eq 0 ]; then
         echo "Da clone thanh cong rl-swarm!"
@@ -388,7 +363,7 @@ else
         exit 1
     fi
 fi
-wget -O $USER_HOME/gensyn/run/bootnodes.txt https://raw.githubusercontent.com/hiepntnaa/general/refs/heads/main/bootnodes.txt
+wget -O $USER_HOME/gensyn/run/bootnodes.txt https://raw.githubusercontent.com/biib6688/code/refs/heads/main/bootnodes.txt
 cd $RL_SWARM_DIR && git fetch origin && git reset --hard origin/main 
 
 echo ""
