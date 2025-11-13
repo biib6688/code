@@ -84,10 +84,12 @@ update_bootnode() {
     fi
 
     cp "$CONFIG_FILE" "$CONFIG_FILE.backup"
-    OLD_BOOTNODE=$(grep -E "^[[:space:]]*-[[:space:]]*'/ip4" "$CONFIG_FILE" | head -1 | sed "s/^[[:space:]]*-[[:space:]]*//")
     
-    # Thay bootnode moi
-    sed -i "/^[[:space:]]*-[[:space:]]*'\/ip4/c\    - '$RANDOM_BOOTNODE'" "$CONFIG_FILE"
+    # Tim dong bootnode trong Python (format: "/ip4/...")
+    OLD_BOOTNODE=$(grep -oP '"/ip4/[^"]+' "$CONFIG_FILE" | head -1 | tr -d '"')
+    
+    # Thay bootnode moi - tim va thay the trong Python list
+    sed -i "s|\"$OLD_BOOTNODE\"|\"$RANDOM_BOOTNODE\"|g" "$CONFIG_FILE"
 }
 
 # Ham copy file va restart
