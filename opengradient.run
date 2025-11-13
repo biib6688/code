@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# Danh sách lệnh
+commands=(
+  "opengradient infer -m QmbUqS93oc4JTLMHwpVxsE39mhNxy6hpf6Py3r9oANr8aZ --input '{\"num_input1\":[1.0,2.0,3.0],\"num_input2\":10,\"str_input1\":[\"hello\",\"ONNX\"],\"str_input2\":\" world\"}'"
+  "opengradient infer -m QmbUqS93oc4JTLMHwpVxsE39mhNxy6hpf6Py3r9oANr8aZ --mode VANILLA --input '{\"num_input1\":[1.0,2.0,3.0],\"num_input2\":10,\"str_input1\":[\"hello\",\"ONNX\"],\"str_input2\":\" world\"}'"
+  "opengradient infer -m QmY1RjD3s4XPbSeKi5TqMwbxegumenZ49t2q7TrK7Xdga4 --input '{\"open_high_low_close\":[[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4],[1,2,3,4]]}'"
+  "opengradient completion --model \"SentientAGI/Dobby-Mini-Leashed-Llama-3.1-8B\" --prompt \"\$(shuf -n 1 /root/opengradient/question.sh)\" --max-tokens 50"
+  "opengradient completion --model \"SentientAGI/Dobby-Mini-Unhinged-Llama-3.1-8B\" --prompt \"\$(shuf -n 1 /root/opengradient/question.sh)\" --max-tokens 50"
+  "opengradient completion --model \"Qwen/Qwen2.5-72B-Instruct\" --prompt \"\$(shuf -n 1 /root/opengradient/question.sh)\" --max-tokens 50"
+  "opengradient completion --model \"meta-llama/Llama-3.2-3B-Instruct\" --prompt \"\$(shuf -n 1 /root/opengradient/question.sh)\" --max-tokens 50"
+)
+
+# Ngủ ngẫu nhiên 10s-60s
+sleep_time=$((RANDOM % 51 + 10))
+echo "⏳ Sleeping for $sleep_time seconds before running command..."
+sleep "$sleep_time"
+
+# Chọn ngẫu nhiên lệnh để chạy
+index=$((RANDOM % ${#commands[@]}))
+echo "▶ Running command #$((index + 1)):"
+echo "${commands[$index]}"
+
+# Thực thi lệnh
+eval "${commands[$index]}" >> opengradient.log 2>&1
+

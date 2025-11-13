@@ -1,0 +1,400 @@
+#!/bin/bash
+
+#set -e  # Dung lai neu co loi
+
+LOGNAME=$(logname 2>/dev/null)
+USER_HOME="/home/$LOGNAME"
+
+# Tao thu muc neu chua ton tai
+mkdir -p "$USER_HOME/gensyn/run"
+
+# Tao service rl-swarm
+cat << 'EOF' > /etc/systemd/system/rl-swarm.service
+[Unit]
+Description=RL Swarm Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/rl-swarm
+ExecStart=/bin/bash -c 'source /root/rl-swarm/.venv/bin/activate && ./run_rl_swarm.sh'
+Restart=always
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Tao service rl-swarm2
+cat << EOF > /etc/systemd/system/rl-swarm2.service
+[Unit]
+Description=Auto Run Gensyn Script
+After=network.target
+
+[Service]
+User=root
+ExecStart=$USER_HOME/gensyn/run/auto.run
+Restart=always
+RestartSec=10
+Environment=LOGNAME=$LOGNAME
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Tao file auto.run (ghi de neu da ton tai)
+cat << 'AUTORUN_EOF' > "$USER_HOME/gensyn/run/auto.run"
+#!/bin/bash
+
+BASE_DIR="$USER_HOME/gensyn/run"
+TARGET_DIR="/root/rl-swarm"
+LOGIN_SUBDIR="modal-login"
+BOOTNODES_FILE="$BASE_DIR/bootnodes.txt"
+CONFIG_FILE="$TARGET_DIR/rgym_exp/config/rg-swarm.yaml"
+STATE_FILE="$BASE_DIR/.current_index"
+
+# Tu dong tim so folder lon nhat
+MAX_FOLDER=$(find "$BASE_DIR" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\n' | sort -n | tail -1)
+MAX_FOLDER=${MAX_FOLDER:-1}
+
+echo "Co $MAX_FOLDER folder"
+
+# Ham chon ngau nhien mot bootnode va cap nhat vao config
+update_bootnode() {
+    if [ ! -f "$BOOTNODES_FILE" ]; then
+        echo "K tim thay file $BOOTNODES_FILE, dung bootnode cu"
+        return
+    fi
+
+    if [ ! -s "$BOOTNODES_FILE" ]; then
+        echo "File bootnode rong, dung bootnode cu"
+        return
+    fi
+
+    RANDOM_BOOTNODE=$(grep -v '^[[:space:]]*$' "$BOOTNODES_FILE" | shuf -n 1)
+    if [ -z "$RANDOM_BOOTNODE" ]; then
+        echo "K lay duoc bootnode, dung bootnode cu"
+        return
+    fi
+
+    cp "$CONFIG_FILE" "$CONFIG_FILE.backup"
+    OLD_BOOTNODE=$(grep -E "^[[:space:]]*-[[:space:]]*'/ip4" "$CONFIG_FILE" | head -1 | sed "s/^[[:space:]]*-[[:space:]]*//")
+    
+    # Thay bootnode moi
+    sed -i "/^[[:space:]]*-[[:space:]]*'\/ip4/c\    - '$RANDOM_BOOTNODE'" "$CONFIG_FILE"
+}
+
+# Ham copy file va restart
+copy_and_restart() {
+    local idx="$1"
+    PEM_SOURCE="$BASE_DIR/$idx/swarm.pem"
+    TEMP_SOURCE="$BASE_DIR/$idx/temp-data"
+
+    if [ ! -f "$PEM_SOURCE" ]; then
+        echo "K tim thay $PEM_SOURCE"
+        return 1
+    fi
+    if [ ! -d "$TEMP_SOURCE" ]; then
+        echo "K tim thay $TEMP_SOURCE"
+        return 1
+    fi
+
+    systemctl stop rl-swarm
+
+    local count=0
+    while systemctl is-active --quiet rl-swarm && [ $count -lt 30 ]; do
+        sleep 1
+        ((count++))
+    done
+
+    pkill -f "yarn start" 2>/dev/null || true
+    pkill -f "node.*modal-login" 2>/dev/null || true
+    sleep 3
+
+    rm -f "$TARGET_DIR/swarm.pem"
+    cp -f "$PEM_SOURCE" "$TARGET_DIR/"
+    rm -rf "$TARGET_DIR/$LOGIN_SUBDIR/temp-data"
+    cp -r "$TEMP_SOURCE" "$TARGET_DIR/$LOGIN_SUBDIR/"
+
+    update_bootnode
+    systemctl start rl-swarm
+
+    local timeout=60
+    local elapsed=0
+    while [ ! -f "$TARGET_DIR/$LOGIN_SUBDIR/temp-data/userData.json" ] && [ $elapsed -lt $timeout ]; do
+        sleep 5
+        ((elapsed+=5))
+    done
+
+    if [ ! -f "$TARGET_DIR/$LOGIN_SUBDIR/temp-data/userData.json" ]; then
+        echo "userData.json khong xuat hien sau $timeout giay"
+        return 1
+    fi
+
+    ORG_ID=$(awk 'BEGIN { FS = "\"" } !/^[ \t]*[{}]/ { print $(NF - 1); exit }' \
+        "$TARGET_DIR/$LOGIN_SUBDIR/temp-data/userData.json")
+
+    local api_timeout=300
+    local api_elapsed=0
+    while [ $api_elapsed -lt $api_timeout ]; do
+        STATUS=$(curl -s "http://localhost:3000/api/get-api-key-status?orgId=$ORG_ID" || echo "error")
+        if [[ "$STATUS" == "activated" ]]; then
+            break
+        else
+            sleep 5
+            ((api_elapsed+=5))
+        fi
+    done
+
+    if [ $api_elapsed -ge $api_timeout ]; then
+        echo "API key khong kich hoat sau $api_timeout giay"
+    fi
+}
+
+# Doc CURRENT_INDEX tu file (neu co), neu khong co thi bat dau tu 1
+if [ -f "$STATE_FILE" ]; then
+    CURRENT_INDEX=$(cat "$STATE_FILE")
+    # Validate la so
+    if ! [[ "$CURRENT_INDEX" =~ ^[0-9]+$ ]]; then
+        CURRENT_INDEX=1
+    fi
+    # Dam bao khong vuot qua MAX_FOLDER
+    if (( CURRENT_INDEX > MAX_FOLDER )); then
+        CURRENT_INDEX=1
+    fi
+else
+    CURRENT_INDEX=1
+fi
+
+echo "Bat dau tu Folder $CURRENT_INDEX"
+copy_and_restart "$CURRENT_INDEX"
+
+# Luu index tiep theo vao file
+NEXT_INDEX=$((CURRENT_INDEX + 1))
+if (( NEXT_INDEX > MAX_FOLDER )); then
+    NEXT_INDEX=1
+fi
+echo "$NEXT_INDEX" > "$STATE_FILE"
+
+CURRENT_INDEX=$NEXT_INDEX
+
+# Thoi gian cho toi da
+TIMEOUT_SECONDS=600
+last_detect_time=$(date +%s)
+
+while true; do
+    LOG_LAST_30S=$(journalctl -u rl-swarm --since "30 seconds ago" -o cat 2>/dev/null || echo "")
+    current_time=$(date +%s)
+
+    if echo "$LOG_LAST_30S" | grep -Eq "Joining round|Already finished"; then
+        last_detect_time=$current_time
+
+        if (( CURRENT_INDEX > MAX_FOLDER )); then
+            CURRENT_INDEX=1
+        fi
+
+        echo "Folder $CURRENT_INDEX | $RANDOM_BOOTNODE"
+        copy_and_restart "$CURRENT_INDEX"
+        
+        # Luu index tiep theo
+        NEXT_INDEX=$((CURRENT_INDEX + 1))
+        if (( NEXT_INDEX > MAX_FOLDER )); then
+            NEXT_INDEX=1
+        fi
+        echo "$NEXT_INDEX" > "$STATE_FILE"
+        
+        CURRENT_INDEX=$NEXT_INDEX
+    else
+        if (( current_time - last_detect_time >= TIMEOUT_SECONDS )); then
+            echo "Error, chuyen folder $CURRENT_INDEX - $RANDOM_BOOTNODE"
+
+            if (( CURRENT_INDEX > MAX_FOLDER )); then
+                CURRENT_INDEX=1
+            fi
+
+            copy_and_restart "$CURRENT_INDEX"
+            
+            # Luu index tiep theo
+            NEXT_INDEX=$((CURRENT_INDEX + 1))
+            if (( NEXT_INDEX > MAX_FOLDER )); then
+                NEXT_INDEX=1
+            fi
+            echo "$NEXT_INDEX" > "$STATE_FILE"
+            
+            CURRENT_INDEX=$NEXT_INDEX
+            last_detect_time=$current_time
+        fi
+    fi
+
+    sleep 20
+done
+AUTORUN_EOF
+
+# Thay the $USER_HOME trong file auto.run
+sed -i "s|\$USER_HOME|$USER_HOME|g" "$USER_HOME/gensyn/run/auto.run"
+
+# Them quyen thuc thi
+chmod +x "$USER_HOME/gensyn/run/auto.run"
+
+# Reload systemd
+systemctl daemon-reload
+
+# Cau hinh crontab cho root
+CRON_CMD="0 2,5,8,11,14,17,20,23 * * * rm -f /home/$(logname)/gensyn/run/.current_index && systemctl restart rl-swarm2"
+CRON_COMMENT="# Auto restart rl-swarm2 every 3 hours"
+
+# Lay crontab hien tai cua root
+CURRENT_CRON=$(crontab -l 2>/dev/null)
+
+# Kiem tra xem cron job da ton tai chua
+if echo "$CURRENT_CRON" | grep -qF "systemctl restart rl-swarm2"; then
+    # Xoa dong cu va them lai
+    UPDATED_CRON=$(echo "$CURRENT_CRON" | grep -vF "systemctl restart rl-swarm2" | grep -vF "Auto restart rl-swarm2")
+    if [ -z "$UPDATED_CRON" ]; then
+        (echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
+    else
+        (echo "$UPDATED_CRON"; echo ""; echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
+    fi
+else
+    if [ -z "$CURRENT_CRON" ]; then
+        (echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
+    else
+        (echo "$CURRENT_CRON"; echo ""; echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
+    fi
+fi
+
+
+echo "BAT DAU CAI DAT CAC PACKAGE CAN THIET"
+
+# Danh sach cac package can cai
+PACKAGES="screen curl iptables build-essential git wget lz4 jq make gcc nano automake autoconf tmux htop nvme-cli libgbm1 pkg-config libssl-dev libleveldb-dev tar clang bsdmainutils ncdu unzip python3 python3-pip python3.10-venv"
+
+# Kiem tra va cai dat cac package con thieu
+echo "Kiem tra cac package..."
+MISSING_PACKAGES=""
+
+for pkg in $PACKAGES; do
+    if ! dpkg -l | grep -q "^ii  $pkg "; then
+        MISSING_PACKAGES="$MISSING_PACKAGES $pkg"
+    fi
+done
+
+if [ -z "$MISSING_PACKAGES" ]; then
+    echo "Tat ca cac package da duoc cai dat!"
+else
+    echo "Cac package can cai dat:$MISSING_PACKAGES"
+    echo "Dang cai dat..."
+    sudo apt update
+    sudo apt install -y $MISSING_PACKAGES
+    echo "Da cai dat xong cac package!"
+fi
+
+
+echo "KIEM TRA VA CAI DAT NODE.JS"
+
+# Kiem tra Node.js
+if command -v node &> /dev/null; then
+    NODE_VERSION=$(node -v)
+    NODE_MAJOR=$(echo $NODE_VERSION | cut -d'.' -f1 | sed 's/v//')
+    echo "Node.js da duoc cai dat: $NODE_VERSION"
+    
+    if [ "$NODE_MAJOR" -lt 22 ]; then
+        echo "Phien ban Node.js qua cu, dang nang cap len v22..."
+        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+        echo "Da nang cap Node.js!"
+    else
+        echo "Phien ban Node.js phu hop, khong can nang cap."
+    fi
+else
+    echo "Node.js chua duoc cai dat, dang cai dat v22..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+    echo "Da cai dat Node.js!"
+fi
+
+echo "KIEM TRA VA CAI DAT YARN"
+
+
+# Kiem tra Yarn
+if command -v yarn &> /dev/null; then
+    YARN_VERSION=$(yarn -v)
+    echo "Yarn da duoc cai dat: v$YARN_VERSION"
+else
+    echo "Yarn chua duoc cai dat, dang cai dat..."
+    curl -o- -L https://yarnpkg.com/install.sh | bash
+    
+    # Them Yarn vao PATH
+    export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
+    
+    # Them vao bashrc neu chua co
+    if ! grep -q ".yarn/bin" ~/.bashrc; then
+        echo 'export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"' >> ~/.bashrc
+    fi
+    
+    source ~/.bashrc
+    echo "Da cai dat Yarn!"
+fi
+
+# Xac dinh thu muc rl-swarm
+RL_SWARM_DIR="/root/rl-swarm"
+
+echo ""
+
+echo "KIEM TRA VA CLONE RL-SWARM"
+
+
+# Kiem tra thu muc rl-swarm
+if [ -d "$RL_SWARM_DIR" ]; then
+    echo "Thu muc rl-swarm da ton tai tai: $RL_SWARM_DIR"
+    echo "Bo qua buoc git clone."
+else
+    echo "Thu muc rl-swarm chua ton tai, dang clone..."
+    cd /root
+    git clone https://github.com/hiepntnaa/rl-swarm/
+    
+    if [ $? -eq 0 ]; then
+        echo "Da clone thanh cong rl-swarm!"
+    else
+        echo "LOI: Khong the clone rl-swarm!"
+        exit 1
+    fi
+fi
+
+echo ""
+
+echo "KIEM TRA VA TAO VIRTUAL ENVIRONMENT"
+
+
+# Kiem tra .venv trong rl-swarm
+if [ -d "$RL_SWARM_DIR/.venv" ]; then
+    echo "Virtual environment da ton tai tai: $RL_SWARM_DIR/.venv"
+    echo "Bo qua buoc tao venv."
+else
+    echo "Virtual environment chua ton tai, dang tao..."
+    cd "$RL_SWARM_DIR"
+    python3 -m venv .venv
+    
+    if [ $? -eq 0 ]; then
+        echo "Da tao thanh cong virtual environment!"
+    else
+        echo "LOI: Khong the tao virtual environment!"
+        exit 1
+    fi
+fi
+wget -O $USER_HOME/gensyn/run/bootnodes.txt https://raw.githubusercontent.com/hiepntnaa/general/refs/heads/main/bootnodes.txt
+cd $RL_SWARM_DIR && git fetch origin && git reset --hard origin/main 
+
+echo ""
+echo -e "\e[92mDe hoan tat chay: cd /root/rl-swarm && . .venv/bin/activate && ./run_first.sh\e[0m"
+echo ""
+echo -e "\e[92mDoi toi khi node bat dau training thi dung lai, sau do chay service bang lenh ben duoi:\e[0m"
+echo ""
+echo -e "\e[92msystemctl enable rl-swarm rl-swarm2 && systemctl restart rl-swarm2\e[0m"
+echo ""

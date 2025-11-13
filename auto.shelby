@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Sleep ngau nhien tu 5 den 15 phut ---
+SLEEP_MINUTES=$((RANDOM % 11 + 5))
+SLEEP_SECONDS=$((SLEEP_MINUTES * 60))
+echo "Cho ngau nhien $SLEEP_MINUTES phut truoc khi bat dau..."
+sleep "$SLEEP_SECONDS"
+
+# --- Cau hinh ---
+DATA_DIR="/root/shelby/data"
+DEST_DIR="files"
+LOG_FILE="/root/shelby/logs.txt"
+
+# --- Bat dau ---
+START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "Bat dau upload luc: $START_TIME"
+
+# --- Buoc 1: chon account ngau nhien ---
+i=$((RANDOM % 2 + 1))
+shelby account use "$i" >/dev/null
+
+# --- Buoc 2: chon file ngau nhien ---
+mapfile -d '' -t files < <(find "$DATA_DIR" -maxdepth 1 -type f -print0)
+if [ "${#files[@]}" -eq 0 ]; then
+  echo "Khong co file nao trong $DATA_DIR de upload. Thoat."
+  exit 1
+fi
+
+idx=$((RANDOM % ${#files[@]}))
+fullpath="${files[$idx]}"
+filename="$(basename "$fullpath")"
+
+# --- Buoc 3: thoi han ngau nhien ---
+EXPIRATION_DAYS=$((RANDOM % 356 + 365))
+EXPIRATION="${EXPIRATION_DAYS}d"
+
+src_path="$DATA_DIR/$filename"
+dst_path="$DEST_DIR/$filename"
+
+# --- Buoc 4: upload ---
+output_file="$(mktemp)"
+if shelby upload "$src_path" "$dst_path" \
+  --expiration "$EXPIRATION" \
+  --assume-yes | tee "$output_file"; then
+
+  # --- Lay 2 link can log ---
+  aptos_link=$(grep -A1 "Aptos Explorer" "$output_file" | tail -n1 | xargs || true)
+  shelby_link=$(grep -A1 "Shelby Explorer" "$output_file" | tail -n1 | xargs || true)
+
+  END_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+
+  {
+    echo "=== Upload luc $START_TIME ==="
+    echo "Aptos Explorer: $aptos_link"
+    echo "Shelby Explorer: $shelby_link"
+  } >> "$LOG_FILE"
+
+  # --- Neu thanh cong thi xoa file goc ---
+  if [ -n "$aptos_link" ] && [ -n "$shelby_link" ]; then
+    rm -f -- "$src_path"
+  fi
+else
+  echo "Upload that bai."
+fi
+
+rm -f "$output_file"

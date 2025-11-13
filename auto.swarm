@@ -1,0 +1,157 @@
+#!/bin/bash
+set -euo pipefail
+systemctl stop rl-swarm rl-swarm2
+rm -rf /root/rl-swarm/swarm.pem /root/rl-swarm/modal-login/temp-data/*
+ls /home/$(logname)/gensyn/
+
+# --- 1. Kiem tra va yeu cau nhap FOLDER neu chua co ---
+if [[ -z "${FOLDER:-}" ]]; then
+  read -p "Nhap so FOLDER chua temp-data can chay: " FOLDER
+  if [[ -z "$FOLDER" ]]; then
+    echo "FOLDER khong duoc de trong! Script dung lai."
+    exit 1
+  fi
+fi
+
+echo "Su dung FOLDER: $FOLDER"
+
+read -p "Nhap so luong swarm.pem muon tao: " NUM_FILES
+if [[ -z "$NUM_FILES" ]] || ! [[ "$NUM_FILES" =~ ^[0-9]+$ ]] || [ "$NUM_FILES" -lt 1 ]; then
+  echo "So luong khong hop le! Phai la so nguyen duong."
+  exit 1
+fi
+
+read -p "Nhap so x bat dau (x trong swarm.pem.x): " START_NUM
+if [[ -z "$START_NUM" ]] || ! [[ "$START_NUM" =~ ^[0-9]+$ ]]; then
+  echo "So thu tu khong hop le! Phai la so nguyen khong am."
+  exit 1
+fi
+
+# Tinh so ket thuc
+END_NUM=$((START_NUM + NUM_FILES - 1))
+
+echo "Se tao $NUM_FILES file tu swarm.pem.$START_NUM den swarm.pem.$END_NUM"
+
+USER_NAME=$(logname)
+BASE_DIR="/home/$USER_NAME/gensyn/$FOLDER"
+SRC_TEMP="$BASE_DIR/temp-data"
+DEST_DIR="/root/rl-swarm"
+CONFIG_FILE="$DEST_DIR/rgym_exp/config/rg-swarm.yaml"
+BOOTNODES_FILE="/home/$USER_NAME/gensyn/run/bootnodes.txt"
+
+# Kiem tra ton tai cua cac thu muc can thiet ---
+if [[ ! -d "$BASE_DIR" ]]; then
+  echo "Thu muc $BASE_DIR khong ton tai!"
+  exit 1
+fi
+
+if [[ ! -d "$SRC_TEMP" ]]; then
+  echo "Thu muc $SRC_TEMP khong ton tai!"
+  exit 1
+fi
+
+if [[ ! -f "$BOOTNODES_FILE" ]]; then
+  echo "File $BOOTNODES_FILE khong ton tai!"
+  exit 1
+fi
+
+# Copy temp-data ---
+echo "Copy du lieu tu $SRC_TEMP den $DEST_DIR/modal-login ..."
+cp -r "$SRC_TEMP" "$DEST_DIR/modal-login"
+
+# Ham chon ngau nhien bootnode va cap nhat vao config ---
+update_bootnode() {
+  echo "Chon bootnode ngau nhien..."
+  
+  # Chon ngau nhien mot bootnode (bo qua dong trong)
+  RANDOM_BOOTNODE=$(grep -v '^[[:space:]]*$' "$BOOTNODES_FILE" | shuf -n 1)
+  
+  if [ -z "$RANDOM_BOOTNODE" ]; then
+    echo "CANH BAO: Khong lay duoc bootnode"
+    return 1
+  fi
+  
+  # Backup file config truoc khi sua
+  cp "$CONFIG_FILE" "$CONFIG_FILE.backup" 2>/dev/null || true
+  
+  # Lay bootnode cu truoc khi thay the
+  OLD_BOOTNODE=$(grep -E "^[[:space:]]*-[[:space:]]*'/ip4" "$CONFIG_FILE" 2>/dev/null | head -1 | sed "s/^[[:space:]]*-[[:space:]]*//")
+  
+  # Tim va thay the dong initial_peers bang bootnode moi
+  sed -i "/^[[:space:]]*-[[:space:]]*'\/ip4/c\    - '$RANDOM_BOOTNODE'" "$CONFIG_FILE"
+  
+  echo "   Bootnode: $RANDOM_BOOTNODE"
+}
+
+# Ham chay 1 vong khoi dong - kiem tra - dung - di chuyen ---
+run_cycle() {
+  local PEM_SUFFIX=$1
+  
+  update_bootnode
+
+  systemctl restart rl-swarm
+  
+  echo "Dang cho file swarm.pem xuat hien..."
+  SRC_PEM="$DEST_DIR/swarm.pem"
+  
+  # Cho toi da 5 phut (60 lan x 5 giay)
+  COUNTER=0
+  while true; do
+    if [[ -f "$SRC_PEM" ]]; then
+      echo "Phat hien swarm.pem"
+      systemctl stop rl-swarm
+      break
+    fi
+    
+    COUNTER=$((COUNTER + 1))
+    if [ $COUNTER -gt 60 ]; then
+      echo "TIMEOUT: Cho qua lau, bo qua vong nay"
+      systemctl stop rl-swarm
+      return 1
+    fi
+    
+    sleep 5
+  done
+  
+  # --- Di chuyen swarm.pem ---
+  DEST_PEM="$BASE_DIR/swarm.pem.$PEM_SUFFIX"
+  
+  if [[ -f "$SRC_PEM" ]]; then
+    echo "Di chuyen $SRC_PEM -> $DEST_PEM"
+    mv "$SRC_PEM" "$DEST_PEM"
+    echo "Vong $PEM_SUFFIX hoan tat"
+  else
+    echo "CANH BAO: Khong tim thay $SRC_PEM!"
+    return 1
+  fi
+  
+  echo ""
+}
+
+# Chay vong lap theo so luong da nhap ---
+echo "Bat dau chay $NUM_FILES vong de tao swarm.pem.$START_NUM den swarm.pem.$END_NUM"
+echo ""
+
+SUCCESS_COUNT=0
+FAIL_COUNT=0
+
+CURRENT_NUM=$START_NUM
+for ((CYCLE=1; CYCLE<=NUM_FILES; CYCLE++)); do
+  echo "Vong $CYCLE/$NUM_FILES - Tao swarm.pem.$CURRENT_NUM"
+  
+  if run_cycle $CURRENT_NUM; then
+    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+  else
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    echo "Vong $CURRENT_NUM that bai"
+    echo ""
+  fi
+  
+  CURRENT_NUM=$((CURRENT_NUM + 1))
+done
+
+echo "HOAN TAT"
+echo "   Thanh cong: $SUCCESS_COUNT/$NUM_FILES"
+echo "   That bai: $FAIL_COUNT/$NUM_FILES"
+echo "Vi tri: $BASE_DIR/"
+echo "Folder: $FOLDER"
