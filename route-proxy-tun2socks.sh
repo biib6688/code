@@ -4,7 +4,7 @@ set -e
 WORKDIR="/root/tun2socks"
 mkdir -p "$WORKDIR"
 
-echo "111.11.11.111:1111:abcd:abcd" > "$WORKDIR/ip.conf"
+# echo "111.11.11.111:1111:abcd:abcd" > "$WORKDIR/ip.conf"
 apt-get update -y
 apt-get install -y unzip wget dnsutils iproute2
 
